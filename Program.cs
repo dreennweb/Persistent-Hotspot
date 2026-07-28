@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.ServiceProcess;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -34,6 +35,7 @@ namespace PermanentHotspotApp
     {
         private TextBox txtSsid = new();
         private TextBox txtPass = new();
+        private ComboBox cmbBand = new();
         private Button btnToggle = new();
         private RichTextBox txtLog = new();
         
@@ -50,34 +52,46 @@ namespace PermanentHotspotApp
         private void InitUI()
         {
             this.Text = "Windows 11 Permanent Hotspot";
-            this.Size = new System.Drawing.Size(540, 420);
+            this.Size = new System.Drawing.Size(540, 470);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
 
+            // SSID Input
             Label lblSsid = new() { Text = "Hotspot SSID:", Location = new System.Drawing.Point(20, 20), AutoSize = true };
-            txtSsid.Location = new System.Drawing.Point(120, 18);
-            txtSsid.Size = new System.Drawing.Size(200, 25);
+            txtSsid.Location = new System.Drawing.Point(130, 18);
+            txtSsid.Size = new System.Drawing.Size(190, 25);
             txtSsid.Text = "Persistent_Win11_Hotspot";
 
+            // Password Input
             Label lblPass = new() { Text = "Password:", Location = new System.Drawing.Point(20, 55), AutoSize = true };
-            txtPass.Location = new System.Drawing.Point(120, 53);
-            txtPass.Size = new System.Drawing.Size(200, 25);
+            txtPass.Location = new System.Drawing.Point(130, 53);
+            txtPass.Size = new System.Drawing.Size(190, 25);
             txtPass.Text = "SecurePass123!";
 
+            // Band Selector (Auto / 2.4 GHz / 5 GHz)
+            Label lblBand = new() { Text = "Network Band:", Location = new System.Drawing.Point(20, 90), AutoSize = true };
+            cmbBand.Location = new System.Drawing.Point(130, 88);
+            cmbBand.Size = new System.Drawing.Size(190, 25);
+            cmbBand.DropDownStyle = ComboBoxStyle.DropDownList;
+            cmbBand.Items.AddRange(new object[] { "Auto (Recommended)", "2.4 GHz (Best Range)", "5 GHz (Best Speed)" });
+            cmbBand.SelectedIndex = 1; // Default to 2.4 GHz for max device compatibility
+
+            // Start / Stop Button
             btnToggle.Text = "Start Hotspot";
             btnToggle.Location = new System.Drawing.Point(340, 18);
-            btnToggle.Size = new System.Drawing.Size(160, 60);
+            btnToggle.Size = new System.Drawing.Size(160, 95);
             btnToggle.Click += async (s, e) => await ToggleHotspotAsync();
 
-            Label lblLog = new() { Text = "Activity & Status Log:", Location = new System.Drawing.Point(20, 95), AutoSize = true };
-            txtLog.Location = new System.Drawing.Point(20, 115);
-            txtLog.Size = new System.Drawing.Size(480, 240);
+            // Log Console Box
+            Label lblLog = new() { Text = "Activity & Status Log:", Location = new System.Drawing.Point(20, 130), AutoSize = true };
+            txtLog.Location = new System.Drawing.Point(20, 150);
+            txtLog.Size = new System.Drawing.Size(480, 260);
             txtLog.ReadOnly = true;
             txtLog.BackColor = System.Drawing.Color.FromArgb(240, 240, 240);
 
-            this.Controls.AddRange(new Control[] { lblSsid, txtSsid, lblPass, txtPass, btnToggle, lblLog, txtLog });
-            Log("App initialized. Ready to start hotspot.");
+            this.Controls.AddRange(new Control[] { lblSsid, txtSsid, lblPass, txtPass, lblBand, cmbBand, btnToggle, lblLog, txtLog });
+            Log("App initialized. Select options and press 'Start Hotspot'.");
         }
 
         private void Log(string message)
@@ -94,7 +108,7 @@ namespace PermanentHotspotApp
             txtLog.SelectionStart = txtLog.Text.Length;
             txtLog.ScrollToCaret();
 
-            // Save log entry to a text file
+            // Save log entry to a local text file
             try
             {
                 File.AppendAllText("hotspot_activity.log", entry + "\n");
@@ -102,6 +116,9 @@ namespace PermanentHotspotApp
             catch { }
         }
 
+        /// <summary>
+        /// Overrides Windows Mobile Hotspot Service (icssvc) idle auto-turnoff behavior.
+        /// </summary>
         private void DisableWindowsHotspotTimeouts()
         {
             try
@@ -111,18 +128,23 @@ namespace PermanentHotspotApp
 
                 if (key != null)
                 {
-                    key.SetValue("PeerListTimeout", 0, RegistryValueKind.DWord);
-                    key.SetValue("PeerlessTimeout", 0, RegistryValueKind.DWord);
-                    Log("[+] Registry: Disabling peerless idle timeouts.");
+                    // PeerlessTimeoutEnabled = 0 explicitly tells Windows never to turn off the hotspot when no devices are connected
+                    key.SetValue("PeerlessTimeoutEnabled", 0, RegistryValueKind.DWord);
+                    
+                    // Set fallback timeout values to 1440 minutes (24 hours)
+                    key.SetValue("PeerlessTimeout", 1440, RegistryValueKind.DWord);
+                    key.SetValue("PeerListTimeout", 1440, RegistryValueKind.DWord);
+                    
+                    Log("[+] Registry: Applied continuous mode (PeerlessTimeoutEnabled = 0).");
                 }
                 else
                 {
-                    Log("[!] Warning: Could not open icssvc registry key.");
+                    Log("[!] Registry Warning: Could not open icssvc registry key.");
                 }
             }
             catch (Exception ex)
             {
-                Log($"[!] Registry Warning: Run as Administrator! Details: {ex.Message}");
+                Log($"[!] Registry Error: Run as Administrator! Details: {ex.Message}");
             }
         }
 
@@ -140,27 +162,48 @@ namespace PermanentHotspotApp
 
                 _isRunning = false;
                 btnToggle.Text = "Start Hotspot";
+                txtSsid.Enabled = true;
+                txtPass.Enabled = true;
+                cmbBand.Enabled = true;
                 btnToggle.Enabled = true;
                 Log("[+] Hotspot manually stopped.");
             }
             else
             {
                 btnToggle.Enabled = false;
-                bool started = await StartHotspotAsync(txtSsid.Text, txtPass.Text);
+                txtSsid.Enabled = false;
+                txtPass.Enabled = false;
+                cmbBand.Enabled = false;
+
+                // Map UI Band choice to WinRT TetheringBand
+                TetheringBand selectedBand = cmbBand.SelectedIndex switch
+                {
+                    1 => TetheringBand.TwoPointFourGigahertz,
+                    2 => TetheringBand.FiveGigahertz,
+                    _ => TetheringBand.Auto
+                };
+
+                bool started = await StartHotspotAsync(txtSsid.Text, txtPass.Text, selectedBand);
 
                 if (started)
                 {
                     _isRunning = true;
                     btnToggle.Text = "Stop Hotspot";
                     _watchdogCts = new CancellationTokenSource();
-                    _ = RunWatchdogAsync(txtSsid.Text, txtPass.Text, _watchdogCts.Token);
+                    _ = RunWatchdogAsync(txtSsid.Text, txtPass.Text, selectedBand, _watchdogCts.Token);
+                }
+                else
+                {
+                    txtSsid.Enabled = true;
+                    txtPass.Enabled = true;
+                    cmbBand.Enabled = true;
                 }
 
                 btnToggle.Enabled = true;
             }
         }
 
-        private async Task<bool> StartHotspotAsync(string ssid, string password)
+        private async Task<bool> StartHotspotAsync(string ssid, string password, TetheringBand band)
         {
             try
             {
@@ -180,10 +223,12 @@ namespace PermanentHotspotApp
                     return false;
                 }
 
+                // Configure SSID, Password, and Selected Band
                 var config = new NetworkOperatorTetheringAccessPointConfiguration
                 {
                     Ssid = ssid,
-                    Passphrase = password
+                    Passphrase = password,
+                    Band = band
                 };
 
                 await _tetheringManager.ConfigureAccessPointAsync(config);
@@ -191,7 +236,7 @@ namespace PermanentHotspotApp
                 var result = await _tetheringManager.StartTetheringAsync();
                 if (result.Status == TetheringOperationStatus.Success)
                 {
-                    Log($"[+] Hotspot successfully started! SSID: '{ssid}'");
+                    Log($"[+] Hotspot started successfully! SSID: '{ssid}' | Band: {band}");
                     return true;
                 }
                 else
@@ -202,12 +247,12 @@ namespace PermanentHotspotApp
             }
             catch (Exception ex)
             {
-                Log($"[-] Exception while starting hotspot: {ex.Message}");
+                Log($"[-] Exception starting hotspot: {ex.Message}");
                 return false;
             }
         }
 
-        private async Task RunWatchdogAsync(string ssid, string password, CancellationToken token)
+        private async Task RunWatchdogAsync(string ssid, string password, TetheringBand band, CancellationToken token)
         {
             while (!token.IsCancellationRequested)
             {
@@ -222,8 +267,8 @@ namespace PermanentHotspotApp
                         var currentState = _tetheringManager.TetheringOperationalState;
                         if (currentState != TetheringOperationalState.On)
                         {
-                            Log($"[!] Watchdog: Hotspot dropped to state '{currentState}'. Re-enabling...");
-                            await StartHotspotAsync(ssid, password);
+                            Log($"[!] Watchdog: Detected state shift to '{currentState}'. Re-enabling...");
+                            await StartHotspotAsync(ssid, password, band);
                         }
                     }
                 }
