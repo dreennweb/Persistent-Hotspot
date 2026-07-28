@@ -175,12 +175,12 @@ namespace PermanentHotspotApp
                 txtPass.Enabled = false;
                 cmbBand.Enabled = false;
 
-                // Map UI Band choice to WinRT TetheringBand
-                TetheringBand selectedBand = cmbBand.SelectedIndex switch
+                // Map UI Band choice to WinRT TetheringWiFiBand
+                TetheringWiFiBand selectedBand = cmbBand.SelectedIndex switch
                 {
-                    1 => TetheringBand.TwoPointFourGigahertz,
-                    2 => TetheringBand.FiveGigahertz,
-                    _ => TetheringBand.Auto
+                    1 => TetheringWiFiBand.TwoPointFourGigahertz,
+                    2 => TetheringWiFiBand.FiveGigahertz,
+                    _ => TetheringWiFiBand.Auto
                 };
 
                 bool started = await StartHotspotAsync(txtSsid.Text, txtPass.Text, selectedBand);
@@ -203,7 +203,7 @@ namespace PermanentHotspotApp
             }
         }
 
-        private async Task<bool> StartHotspotAsync(string ssid, string password, TetheringBand band)
+        private async Task<bool> StartHotspotAsync(string ssid, string password, TetheringWiFiBand band)
         {
             try
             {
@@ -252,7 +252,7 @@ namespace PermanentHotspotApp
             }
         }
 
-        private async Task RunWatchdogAsync(string ssid, string password, TetheringBand band, CancellationToken token)
+        private async Task RunWatchdogAsync(string ssid, string password, TetheringWiFiBand band, CancellationToken token)
         {
             while (!token.IsCancellationRequested)
             {
