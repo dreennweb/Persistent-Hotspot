@@ -78,47 +78,46 @@ namespace PermanentHotspotApp
         /// <summary>
         /// Initializes the WinRT Tethering Manager and configures SSID/Password.
         /// </summary>
-        private static async Task<bool> StartHotspotAsync(string ssid, string password)
+       private static async Task<bool> StartHotspotAsync(string ssid, string password)
+{
+    try
+    {
+        ConnectionProfile connectionProfile = NetworkInformation.GetInternetConnectionProfile();
+        if (connectionProfile == null)
         {
-            try
-            {
-                ConnectionProfile connectionProfile = NetworkInformation.GetInternetConnectionProfile();
-                if (connectionProfile == null)
-                {
-                    Console.WriteLine("[-] No active internet connection found to share.");
-                    return false;
-                }
-
-                _tetheringManager = NetworkOperatorTetheringManager.CreateFromConnectionProfile(connectionProfile);
-
-                // Check capability
-                var capability = NetworkOperatorTetheringManager.GetTetheringCapabilityFromConnectionProfile(connectionProfile);
-                if (capability != TetheringCapability.Enabled)
-                {
-                    Console.WriteLine($"[-] Tethering not allowed. Reason: {capability}");
-                    return false;
-                }
-
-                // Apply SSID & Password
-                var config = new NetworkOperatorTetheringAccessPointConfiguration
-                {
-                    Ssid = ssid,
-                    Passphrase = password
-                };
-
-                await _tetheringManager.ConfigureAccessPointAsync(config);
-
-                // Start Hotspot
-                TetheringOperationResult result = await _tetheringManager.StartTetheringAsync();
-                return result.Status == TetheringOperationStatus.Success;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[-] Error starting hotspot: {ex.Message}");
-                return false;
-            }
+            Console.WriteLine("[-] No active internet connection found to share.");
+            return false;
         }
 
+        _tetheringManager = NetworkOperatorTetheringManager.CreateFromConnectionProfile(connectionProfile);
+
+        // Check capability
+        var capability = NetworkOperatorTetheringManager.GetTetheringCapabilityFromConnectionProfile(connectionProfile);
+        if (capability != TetheringCapability.Enabled)
+        {
+            Console.WriteLine($"[-] Tethering not allowed. Reason: {capability}");
+            return false;
+        }
+
+        // Apply SSID & Password
+        var config = new NetworkOperatorTetheringAccessPointConfiguration
+        {
+            Ssid = ssid,
+            Passphrase = password
+        };
+
+        await _tetheringManager.ConfigureAccessPointAsync(config);
+
+        // Start Hotspot
+        NetworkOperatorTetheringOperationResult result = await _tetheringManager.StartTetheringAsync();
+        return result.Status == TetheringOperationStatus.Success;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[-] Error starting hotspot: {ex.Message}");
+        return false;
+    }
+}
         /// <summary>
         /// Continuous background task checking hotspot health every 10 seconds.
         /// Re-enables the hotspot immediately if Windows turns it off.
