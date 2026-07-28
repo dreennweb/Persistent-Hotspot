@@ -1,60 +1,108 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using Microsoft.Win32;
 using Windows.Networking.Connectivity;
 using Windows.Networking.NetworkOperators;
 
 namespace PermanentHotspotApp
 {
-    internal class Program
+    static class Program
     {
-        private static NetworkOperatorTetheringManager? _tetheringManager;
-        private static bool _userRequestedStop = false;
-
-        static async Task Main(string[] args)
+        [STAThread]
+        static void Main()
         {
-            Console.WriteLine("=== Windows 11 Permanent Hotspot Service ===");
+            Application.SetHighDpiMode(HighDpiMode.SystemAware);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
 
-            // 1. Apply Registry Fixes to disable Windows auto-shutoff timeouts
-            DisableWindowsHotspotTimeouts();
-
-            // 2. Initialize and start Hotspot
-            bool started = await StartHotspotAsync("Persistent_Win11_Hotspot", "SecurePass123!");
-
-            if (!started)
+            // Log uncaught crashes directly to a file instead of closing silently
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
             {
-                Console.WriteLine("[-] Failed to start hotspot. Check network adapter capabilities.");
+                string crashMsg = $"[{DateTime.Now}] CRASH: {e.ExceptionObject}";
+                File.AppendAllText("hotspot_crash.log", crashMsg + "\n");
+                MessageBox.Show($"An error occurred:\n{e.ExceptionObject}", "Hotspot Crash Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            };
+
+            Application.Run(new MainForm());
+        }
+    }
+
+    public class MainForm : Form
+    {
+        private TextBox txtSsid = new();
+        private TextBox txtPass = new();
+        private Button btnToggle = new();
+        private RichTextBox txtLog = new();
+        
+        private NetworkOperatorTetheringManager? _tetheringManager;
+        private CancellationTokenSource? _watchdogCts;
+        private bool _isRunning = false;
+
+        public MainForm()
+        {
+            InitUI();
+            DisableWindowsHotspotTimeouts();
+        }
+
+        private void InitUI()
+        {
+            this.Text = "Windows 11 Permanent Hotspot";
+            this.Size = new System.Drawing.Size(540, 420);
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.FormBorderStyle = FormBorderStyle.FixedSingle;
+            this.MaximizeBox = false;
+
+            Label lblSsid = new() { Text = "Hotspot SSID:", Location = new System.Drawing.Point(20, 20), AutoSize = true };
+            txtSsid.Location = new System.Drawing.Point(120, 18);
+            txtSsid.Size = new System.Drawing.Size(200, 25);
+            txtSsid.Text = "Persistent_Win11_Hotspot";
+
+            Label lblPass = new() { Text = "Password:", Location = new System.Drawing.Point(20, 55), AutoSize = true };
+            txtPass.Location = new System.Drawing.Point(120, 53);
+            txtPass.Size = new System.Drawing.Size(200, 25);
+            txtPass.Text = "SecurePass123!";
+
+            btnToggle.Text = "Start Hotspot";
+            btnToggle.Location = new System.Drawing.Point(340, 18);
+            btnToggle.Size = new System.Drawing.Size(160, 60);
+            btnToggle.Click += async (s, e) => await ToggleHotspotAsync();
+
+            Label lblLog = new() { Text = "Activity & Status Log:", Location = new System.Drawing.Point(20, 95), AutoSize = true };
+            txtLog.Location = new System.Drawing.Point(20, 115);
+            txtLog.Size = new System.Drawing.Size(480, 240);
+            txtLog.ReadOnly = true;
+            txtLog.BackColor = System.Drawing.Color.FromArgb(240, 240, 240);
+
+            this.Controls.AddRange(new Control[] { lblSsid, txtSsid, lblPass, txtPass, btnToggle, lblLog, txtLog });
+            Log("App initialized. Ready to start hotspot.");
+        }
+
+        private void Log(string message)
+        {
+            string entry = $"[{DateTime.Now:HH:mm:ss}] {message}";
+            
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => Log(message)));
                 return;
             }
 
-            Console.WriteLine("[+] Hotspot running successfully!");
-            Console.WriteLine("[!] Press CTRL+C or 'Q' to manually terminate.");
+            txtLog.AppendText(entry + "\n");
+            txtLog.SelectionStart = txtLog.Text.Length;
+            txtLog.ScrollToCaret();
 
-            // 3. Start Watchdog Loop (Ensures it stays on continuously)
-            var cts = new CancellationTokenSource();
-            Task watchdogTask = RunWatchdogAsync("Persistent_Win11_Hotspot", "SecurePass123!", cts.Token);
-
-            // Wait for user input to stop manually
-            while (!_userRequestedStop)
+            // Save log entry to a text file
+            try
             {
-                if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Q)
-                {
-                    _userRequestedStop = true;
-                }
-                await Task.Delay(500);
+                File.AppendAllText("hotspot_activity.log", entry + "\n");
             }
-
-            // Clean shutdown when requested by user
-            cts.Cancel();
-            await StopHotspotAsync();
-            Console.WriteLine("[+] Hotspot manually stopped.");
+            catch { }
         }
 
-        /// <summary>
-        /// Disables Windows Peerless Timeout by altering icssvc settings in HKLM Registry.
-        /// </summary>
-        private static void DisableWindowsHotspotTimeouts()
+        private void DisableWindowsHotspotTimeouts()
         {
             try
             {
@@ -63,94 +111,127 @@ namespace PermanentHotspotApp
 
                 if (key != null)
                 {
-                    // Setting PeerListTimeout / PeerlessTimeout to 0 or 0xFFFFFFFF prevents idle disconnects
                     key.SetValue("PeerListTimeout", 0, RegistryValueKind.DWord);
                     key.SetValue("PeerlessTimeout", 0, RegistryValueKind.DWord);
-                    Console.WriteLine("[+] Registry overrides applied: Peerless timeouts disabled.");
+                    Log("[+] Registry: Disabling peerless idle timeouts.");
+                }
+                else
+                {
+                    Log("[!] Warning: Could not open icssvc registry key.");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[!] Warning: Could not write registry keys (Run as Administrator). Details: {ex.Message}");
+                Log($"[!] Registry Warning: Run as Administrator! Details: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// Initializes the WinRT Tethering Manager and configures SSID/Password.
-        /// </summary>
-       private static async Task<bool> StartHotspotAsync(string ssid, string password)
-{
-    try
-    {
-        ConnectionProfile connectionProfile = NetworkInformation.GetInternetConnectionProfile();
-        if (connectionProfile == null)
+        private async Task ToggleHotspotAsync()
         {
-            Console.WriteLine("[-] No active internet connection found to share.");
-            return false;
-        }
-
-        _tetheringManager = NetworkOperatorTetheringManager.CreateFromConnectionProfile(connectionProfile);
-
-        // Check capability
-        var capability = NetworkOperatorTetheringManager.GetTetheringCapabilityFromConnectionProfile(connectionProfile);
-        if (capability != TetheringCapability.Enabled)
-        {
-            Console.WriteLine($"[-] Tethering not allowed. Reason: {capability}");
-            return false;
-        }
-
-        // Apply SSID & Password
-        var config = new NetworkOperatorTetheringAccessPointConfiguration
-        {
-            Ssid = ssid,
-            Passphrase = password
-        };
-
-        await _tetheringManager.ConfigureAccessPointAsync(config);
-
-        // Start Hotspot
-        NetworkOperatorTetheringOperationResult result = await _tetheringManager.StartTetheringAsync();
-        return result.Status == TetheringOperationStatus.Success;
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[-] Error starting hotspot: {ex.Message}");
-        return false;
-    }
-}
-        /// <summary>
-        /// Continuous background task checking hotspot health every 10 seconds.
-        /// Re-enables the hotspot immediately if Windows turns it off.
-        /// </summary>
-        private static async Task RunWatchdogAsync(string ssid, string password, CancellationToken token)
-        {
-            while (!token.IsCancellationRequested)
+            if (_isRunning)
             {
-                await Task.Delay(TimeSpan.FromSeconds(10), token);
-
-                if (_userRequestedStop) break;
+                btnToggle.Enabled = false;
+                _watchdogCts?.Cancel();
 
                 if (_tetheringManager != null)
                 {
-                    var currentState = _tetheringManager.TetheringOperationalState;
-
-                    if (currentState != TetheringOperationalState.On)
-                    {
-                        Console.WriteLine($"[!] Watchdog detected hotspot dropped state ({currentState}). Restarting...");
-                        await StartHotspotAsync(ssid, password);
-                    }
+                    await _tetheringManager.StopTetheringAsync();
                 }
+
+                _isRunning = false;
+                btnToggle.Text = "Start Hotspot";
+                btnToggle.Enabled = true;
+                Log("[+] Hotspot manually stopped.");
+            }
+            else
+            {
+                btnToggle.Enabled = false;
+                bool started = await StartHotspotAsync(txtSsid.Text, txtPass.Text);
+
+                if (started)
+                {
+                    _isRunning = true;
+                    btnToggle.Text = "Stop Hotspot";
+                    _watchdogCts = new CancellationTokenSource();
+                    _ = RunWatchdogAsync(txtSsid.Text, txtPass.Text, _watchdogCts.Token);
+                }
+
+                btnToggle.Enabled = true;
             }
         }
 
-        /// <summary>
-        /// Manually terminates the hotspot connection.
-        /// </summary>
-        private static async Task StopHotspotAsync()
+        private async Task<bool> StartHotspotAsync(string ssid, string password)
         {
-            if (_tetheringManager != null)
+            try
             {
-                await _tetheringManager.StopTetheringAsync();
+                ConnectionProfile connectionProfile = NetworkInformation.GetInternetConnectionProfile();
+                if (connectionProfile == null)
+                {
+                    Log("[-] Error: No active internet connection found to share.");
+                    return false;
+                }
+
+                _tetheringManager = NetworkOperatorTetheringManager.CreateFromConnectionProfile(connectionProfile);
+
+                var capability = NetworkOperatorTetheringManager.GetTetheringCapabilityFromConnectionProfile(connectionProfile);
+                if (capability != TetheringCapability.Enabled)
+                {
+                    Log($"[-] Error: Tethering unavailable. Reason: {capability}");
+                    return false;
+                }
+
+                var config = new NetworkOperatorTetheringAccessPointConfiguration
+                {
+                    Ssid = ssid,
+                    Passphrase = password
+                };
+
+                await _tetheringManager.ConfigureAccessPointAsync(config);
+
+                var result = await _tetheringManager.StartTetheringAsync();
+                if (result.Status == TetheringOperationStatus.Success)
+                {
+                    Log($"[+] Hotspot successfully started! SSID: '{ssid}'");
+                    return true;
+                }
+                else
+                {
+                    Log($"[-] Failed to start hotspot. Status: {result.Status}");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[-] Exception while starting hotspot: {ex.Message}");
+                return false;
+            }
+        }
+
+        private async Task RunWatchdogAsync(string ssid, string password, CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), token);
+
+                    if (!_isRunning) break;
+
+                    if (_tetheringManager != null)
+                    {
+                        var currentState = _tetheringManager.TetheringOperationalState;
+                        if (currentState != TetheringOperationalState.On)
+                        {
+                            Log($"[!] Watchdog: Hotspot dropped to state '{currentState}'. Re-enabling...");
+                            await StartHotspotAsync(ssid, password);
+                        }
+                    }
+                }
+                catch (TaskCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    Log($"[!] Watchdog exception: {ex.Message}");
+                }
             }
         }
     }
