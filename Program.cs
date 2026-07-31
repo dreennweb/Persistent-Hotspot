@@ -33,6 +33,8 @@ namespace PermanentHotspotApp
 
     public class MainForm : Form
     {
+        private const string CONFIG_FILE = "hotspot_config.txt";
+
         private TextBox txtSsid = new();
         private TextBox txtPass = new();
         private ComboBox cmbBand = new();
@@ -47,6 +49,9 @@ namespace PermanentHotspotApp
         {
             InitUI();
             DisableWindowsHotspotTimeouts();
+
+            // Handle preconfiguration and autostart after form loads
+            this.Shown += async (s, e) => await LoadConfigAndAutoStartAsync();
         }
 
         private void InitUI()
@@ -91,7 +96,73 @@ namespace PermanentHotspotApp
             txtLog.BackColor = System.Drawing.Color.FromArgb(240, 240, 240);
 
             this.Controls.AddRange(new Control[] { lblSsid, txtSsid, lblPass, txtPass, lblBand, cmbBand, btnToggle, lblLog, txtLog });
-            Log("App initialized. Select options and press 'Start Hotspot'.");
+            Log("App initialized. Checking for configuration file...");
+        }
+
+        /// <summary>
+        /// Reads hotspot_config.txt if present and triggers automatic hotspot start.
+        /// </summary>
+        private async Task LoadConfigAndAutoStartAsync()
+        {
+            if (!File.Exists(CONFIG_FILE))
+            {
+                Log($"[i] Config file '{CONFIG_FILE}' not found. Using default UI parameters.");
+                return;
+            }
+
+            try
+            {
+                string[] lines = File.ReadAllLines(CONFIG_FILE);
+                string loadedSsid = "";
+                string loadedPass = "";
+                int loadedBand = 1; // Default 2.4 GHz
+                bool autoStart = true;
+
+                foreach (string line in lines)
+                {
+                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
+
+                    string[] parts = line.Split('=', 2);
+                    if (parts.Length != 2) continue;
+
+                    string key = parts[0].Trim().ToUpperInvariant();
+                    string value = parts[1].Trim();
+
+                    switch (key)
+                    {
+                        case "SSID":
+                            loadedSsid = value;
+                            break;
+                        case "PASSWORD":
+                            loadedPass = value;
+                            break;
+                        case "BAND":
+                            if (int.TryParse(value, out int b) && b >= 0 && b <= 2)
+                                loadedBand = b;
+                            break;
+                        case "AUTOSTART":
+                            if (bool.TryParse(value, out bool auto))
+                                autoStart = auto;
+                            break;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(loadedSsid)) txtSsid.Text = loadedSsid;
+                if (!string.IsNullOrEmpty(loadedPass)) txtPass.Text = loadedPass;
+                cmbBand.SelectedIndex = loadedBand;
+
+                Log($"[+] Config file loaded successfully! (SSID: '{txtSsid.Text}')");
+
+                if (autoStart)
+                {
+                    Log("[+] AutoStart enabled. Launching hotspot automatically...");
+                    await ToggleHotspotAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[!] Error reading config file: {ex.Message}");
+            }
         }
 
         private void Log(string message)
@@ -116,9 +187,6 @@ namespace PermanentHotspotApp
             catch { }
         }
 
-        /// <summary>
-        /// Overrides Windows Mobile Hotspot Service (icssvc) idle auto-turnoff behavior.
-        /// </summary>
         private void DisableWindowsHotspotTimeouts()
         {
             try
@@ -128,10 +196,7 @@ namespace PermanentHotspotApp
 
                 if (key != null)
                 {
-                    // PeerlessTimeoutEnabled = 0 explicitly tells Windows never to turn off the hotspot when no devices are connected
                     key.SetValue("PeerlessTimeoutEnabled", 0, RegistryValueKind.DWord);
-                    
-                    // Set fallback timeout values to 1440 minutes (24 hours)
                     key.SetValue("PeerlessTimeout", 1440, RegistryValueKind.DWord);
                     key.SetValue("PeerListTimeout", 1440, RegistryValueKind.DWord);
                     
@@ -175,7 +240,6 @@ namespace PermanentHotspotApp
                 txtPass.Enabled = false;
                 cmbBand.Enabled = false;
 
-                // Map UI Band choice to WinRT TetheringWiFiBand
                 TetheringWiFiBand selectedBand = cmbBand.SelectedIndex switch
                 {
                     1 => TetheringWiFiBand.TwoPointFourGigahertz,
@@ -223,7 +287,6 @@ namespace PermanentHotspotApp
                     return false;
                 }
 
-                // Configure SSID, Password, and Selected Band
                 var config = new NetworkOperatorTetheringAccessPointConfiguration
                 {
                     Ssid = ssid,
